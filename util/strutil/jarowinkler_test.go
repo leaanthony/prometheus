@@ -15,6 +15,8 @@ package strutil
 
 import (
 	"math"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -81,5 +83,57 @@ func TestJaroWinklerMatcher(t *testing.T) {
 				t.Errorf("NewJaroWinklerMatcher(%q).Score(%q) = %f, but NewJaroWinklerMatcher(%q).Score(%q) = %f (not symmetric)", tt.s1, tt.s2, score, tt.s2, tt.s1, reverse)
 			}
 		})
+	}
+}
+
+func TestJaroWinklerMatcherReusesWorkspaceAcrossCandidateSizes(t *testing.T) {
+	matcher := NewJaroWinklerMatcher("prometheus")
+	tests := []struct {
+		name      string
+		candidate string
+		min       float64
+		max       float64
+	}{
+		{name: "large similar", candidate: "promethus" + strings.Repeat("x", 128), min: 0.79, max: 0.80},
+		{name: "small similar", candidate: "promethus", min: 0.979, max: 0.981},
+		{name: "large dissimilar", candidate: strings.Repeat("z", 256), min: 0.0, max: 0.0},
+		{name: "exact", candidate: "prometheus", min: 1.0, max: 1.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := matcher.Score(tt.candidate)
+			if score < tt.min || score > tt.max {
+				t.Errorf("Score(%q) = %f, want in [%f, %f]", tt.candidate, score, tt.min, tt.max)
+			}
+		})
+	}
+}
+
+func TestJaroWinklerMatcherConcurrentUnicode(t *testing.T) {
+	const (
+		iterations = 10
+		workers    = 32
+	)
+
+	for range iterations {
+		matcher := NewJaroWinklerMatcher("prometheus")
+		scores := make([]float64, workers)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := range workers {
+			wg.Go(func() {
+				<-start
+				scores[i] = matcher.Score("prométheus")
+			})
+		}
+		close(start)
+		wg.Wait()
+
+		for _, score := range scores {
+			if score < 0.92 || score > 0.94 {
+				t.Fatalf("Score() = %f, want in [0.92, 0.94]", score)
+			}
+		}
 	}
 }

@@ -13,7 +13,10 @@
 
 package strutil
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 var benchCases = []struct {
 	name, s1, s2 string
@@ -22,7 +25,9 @@ var benchCases = []struct {
 	{"similar_short", "martha", "marhta"},
 	{"dissimilar_short", "dixon", "dicksonx"},
 	{"long_ascii", "http_requests_total_by_method_and_path", "http_requests_count_by_method_and_path"},
+	{"two_kilobyte_candidate", "search-term", strings.Repeat("candidate", 226)},
 	{"unicode", "naïve", "naive"},
+	{"ascii_term_unicode_candidate", "prometheus", "prométheus"},
 }
 
 func BenchmarkJaroWinklerMatcher(b *testing.B) {

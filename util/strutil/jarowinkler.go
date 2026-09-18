@@ -13,15 +13,45 @@
 
 package strutil
 
-// JaroWinklerMatcher pre-computes the encoding of a fixed search term so that
-// it can be scored against many candidate strings without repeating the ASCII
-// check or rune conversion on the term for every call. The first Score call
-// with a Unicode candidate lazily caches the term's rune slice. It is not
-// safe for concurrent use.
+import "sync"
+
+// Small match buffers stay on the stack. Larger buffers are pooled to avoid
+// allocating memory proportional to the candidate length for every score.
+const jaroWinklerPoolThreshold = 64
+
+type jaroWinklerWorkspace struct {
+	matches []bool
+}
+
+var jaroWinklerWorkspacePool = sync.Pool{
+	New: func() any {
+		return &jaroWinklerWorkspace{}
+	},
+}
+
+func getJaroWinklerMatchSlices(l1, l2 int) (s1Matches, s2Matches []bool, workspace *jaroWinklerWorkspace) {
+	workspace = jaroWinklerWorkspacePool.Get().(*jaroWinklerWorkspace)
+	total := l1 + l2
+	if cap(workspace.matches) < total {
+		workspace.matches = make([]bool, total)
+	} else {
+		workspace.matches = workspace.matches[:total]
+		clear(workspace.matches)
+	}
+	return workspace.matches[:l1], workspace.matches[l1:], workspace
+}
+
+func putJaroWinklerWorkspace(workspace *jaroWinklerWorkspace) {
+	jaroWinklerWorkspacePool.Put(workspace)
+}
+
+// JaroWinklerMatcher records the encoding of a fixed search term so that it can
+// be scored against many candidate strings without repeating work on the term.
+// It is safe for concurrent use.
 type JaroWinklerMatcher struct {
 	term      string // original term; used directly on the ASCII path
 	termASCII bool   // whether term is pure ASCII
-	termRunes []rune // pre-converted runes; set when !termASCII or on first Unicode candidate
+	termRunes []rune // pre-converted runes for a Unicode term
 }
 
 // NewJaroWinklerMatcher returns a matcher for the given term.
@@ -45,11 +75,13 @@ func (m *JaroWinklerMatcher) Score(s string) float64 {
 		return jaroWinklerString(m.term, s)
 	}
 	// Either the term or s is Unicode; use the rune path.
-	if m.termRunes == nil {
-		// term is ASCII but s is Unicode; convert and cache term runes.
-		m.termRunes = []rune(m.term)
+	termRunes := m.termRunes
+	if termRunes == nil {
+		// Keep the matcher immutable after construction. Caching this conversion
+		// would race when callers share an ASCII matcher across goroutines.
+		termRunes = []rune(m.term)
 	}
-	return jaroWinklerRunes(m.termRunes, []rune(s))
+	return jaroWinklerRunes(termRunes, []rune(s))
 }
 
 // jaroWinklerString implements the Jaro-Winkler algorithm directly on ASCII
@@ -66,8 +98,15 @@ func jaroWinklerString(s1, s2 string) float64 {
 	// Jaro match distance: characters must be within this many positions to match.
 	matchDistance := max(l2/2-1, 0)
 
-	s1Matches := make([]bool, l1)
-	s2Matches := make([]bool, l2)
+	var s1Matches, s2Matches []bool
+	var workspace *jaroWinklerWorkspace
+	if l1+l2 > jaroWinklerPoolThreshold {
+		s1Matches, s2Matches, workspace = getJaroWinklerMatchSlices(l1, l2)
+		defer putJaroWinklerWorkspace(workspace)
+	} else {
+		s1Matches = make([]bool, l1)
+		s2Matches = make([]bool, l2)
+	}
 
 	var matches float64
 	var transpositions float64
@@ -134,8 +173,15 @@ func jaroWinklerRunes(r1, r2 []rune) float64 {
 	// Jaro match distance: characters must be within this many positions to match.
 	matchDistance := max(l2/2-1, 0)
 
-	r1Matches := make([]bool, l1)
-	r2Matches := make([]bool, l2)
+	var r1Matches, r2Matches []bool
+	var workspace *jaroWinklerWorkspace
+	if l1+l2 > jaroWinklerPoolThreshold {
+		r1Matches, r2Matches, workspace = getJaroWinklerMatchSlices(l1, l2)
+		defer putJaroWinklerWorkspace(workspace)
+	} else {
+		r1Matches = make([]bool, l1)
+		r2Matches = make([]bool, l2)
+	}
 
 	var matches float64
 	var transpositions float64

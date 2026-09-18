@@ -198,7 +198,14 @@ func TestFuzzyFilter(t *testing.T) {
 
 func TestFuzzyFilterConcurrency(_ *testing.T) {
 	filter := NewFuzzyFilter("prometheus", 0.8)
-	values := []string{"prometheus", "promethus", "promethius", "prmetheus", "prometeus"} //nolint:misspell
+	values := []string{
+		"prometheus",
+		"promethus",  //nolint:misspell
+		"promethius", //nolint:misspell
+		"prmetheus",  //nolint:misspell
+		"prometeus",  //nolint:misspell
+		"prometheus" + strings.Repeat("x", 128),
+	}
 
 	var wg sync.WaitGroup
 	for range 10 {
